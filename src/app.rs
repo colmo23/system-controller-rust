@@ -1,6 +1,6 @@
 use crate::config::{Host, ServiceConfig};
 use crate::monitor::status::{build_grid, refresh_cell};
-use crate::monitor::HostService;
+use crate::monitor::{GridResult, HostService};
 use crate::ssh::SessionManager;
 use crate::tui;
 use crate::tui::event::{poll_event, AppEvent};
@@ -8,6 +8,7 @@ use crate::tui::ui::render;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
+use std::collections::HashSet;
 use std::process::Command;
 use tokio::sync::mpsc;
 
@@ -21,10 +22,13 @@ pub enum Screen {
 }
 
 pub enum RefreshResult {
-    FullGrid {
-        service_names: Vec<String>,
-        grid: Vec<Vec<HostService>>,
-    },
+    FullGrid(GridResult),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum FlatEntry {
+    Service { host_idx: usize, svc_idx: usize },
+    UnreachableHost { host_idx: usize },
 }
 
 pub struct AppState {
@@ -32,6 +36,7 @@ pub struct AppState {
     pub service_configs: Vec<ServiceConfig>,
     pub service_names: Vec<String>,
     pub grid: Vec<Vec<HostService>>,
+    pub unreachable_hosts: HashSet<usize>,
     pub screen: Screen,
     pub cursor: usize,
     pub table_state: TableState,
@@ -47,6 +52,7 @@ impl AppState {
             service_configs,
             service_names: Vec::new(),
             grid: Vec::new(),
+            unreachable_hosts: HashSet::new(),
             screen: Screen::Main,
             cursor: 0,
             table_state: TableState::default().with_selected(0),
@@ -56,12 +62,17 @@ impl AppState {
         }
     }
 
-    /// Build a flat list of (host_idx, svc_idx) for every cell in the grid.
-    pub fn flat_entries(&self) -> Vec<(usize, usize)> {
+    /// Build a flat list of entries for the main screen.
+    /// Unreachable hosts get a single entry; reachable hosts get one entry per service.
+    pub fn flat_entries(&self) -> Vec<FlatEntry> {
         let mut entries = Vec::new();
         for (host_idx, row) in self.grid.iter().enumerate() {
-            for (svc_idx, _) in row.iter().enumerate() {
-                entries.push((host_idx, svc_idx));
+            if self.unreachable_hosts.contains(&host_idx) {
+                entries.push(FlatEntry::UnreachableHost { host_idx });
+            } else {
+                for (svc_idx, _) in row.iter().enumerate() {
+                    entries.push(FlatEntry::Service { host_idx, svc_idx });
+                }
             }
         }
         entries
@@ -69,11 +80,11 @@ impl AppState {
 
     /// Total number of entries in the flat list.
     pub fn flat_len(&self) -> usize {
-        self.grid.iter().map(|r| r.len()).sum()
+        self.flat_entries().len()
     }
 
-    /// Get the (host_idx, svc_idx) for the current cursor position.
-    pub fn selected_entry(&self) -> Option<(usize, usize)> {
+    /// Get the flat entry at the current cursor position.
+    pub fn selected_entry(&self) -> Option<FlatEntry> {
         self.flat_entries().get(self.cursor).copied()
     }
 
@@ -101,6 +112,18 @@ impl AppState {
 
     fn detail_item_count(&self, host_idx: usize, svc_idx: usize) -> usize {
         self.detail_items(host_idx, svc_idx).len()
+    }
+
+    fn apply_grid_result(&mut self, result: GridResult) {
+        self.service_names = result.service_names;
+        self.grid = result.grid;
+        self.unreachable_hosts = result.unreachable_hosts;
+        self.refreshing = false;
+        // Clamp cursor
+        let len = self.flat_len();
+        if len > 0 && self.cursor >= len {
+            self.cursor = len - 1;
+        }
     }
 }
 
@@ -132,19 +155,13 @@ pub async fn run(
         // Drain async refresh results
         while let Ok(result) = refresh_rx.try_recv() {
             match result {
-                RefreshResult::FullGrid {
-                    service_names,
-                    grid,
-                } => {
-                    log::info!("Refresh complete: {} services across {} hosts", service_names.len(), grid.len());
-                    state.service_names = service_names;
-                    state.grid = grid;
-                    state.refreshing = false;
-                    // Clamp cursor
-                    let len = state.flat_len();
-                    if len > 0 && state.cursor >= len {
-                        state.cursor = len - 1;
-                    }
+                RefreshResult::FullGrid(grid_result) => {
+                    log::info!(
+                        "Refresh complete: {} services, {} unreachable hosts",
+                        grid_result.service_names.len(),
+                        grid_result.unreachable_hosts.len()
+                    );
+                    state.apply_grid_result(grid_result);
                 }
             }
         }
@@ -212,15 +229,15 @@ async fn handle_main_key(
             }
         }
         KeyCode::Enter => {
-            if let Some((hi, si)) = state.selected_entry() {
+            if let Some(FlatEntry::Service { host_idx, svc_idx }) = state.selected_entry() {
                 log::info!(
                     "Opening detail view for {}:{}",
-                    state.hosts[hi].address,
-                    state.service_names[si]
+                    state.hosts[host_idx].address,
+                    state.service_names[svc_idx]
                 );
                 state.screen = Screen::Detail {
-                    host_index: hi,
-                    service_index: si,
+                    host_index: host_idx,
+                    service_index: svc_idx,
                 };
                 state.detail_cursor = 0;
             }
@@ -230,7 +247,12 @@ async fn handle_main_key(
             spawn_full_refresh(state, refresh_tx);
         }
         KeyCode::Char('c') => {
-            if let Some((hi, _)) = state.selected_entry() {
+            let host_idx = match state.selected_entry() {
+                Some(FlatEntry::Service { host_idx, .. }) => Some(host_idx),
+                Some(FlatEntry::UnreachableHost { host_idx }) => Some(host_idx),
+                None => None,
+            };
+            if let Some(hi) = host_idx {
                 let host = state.hosts[hi].address.clone();
                 log::info!("Opening SSH session to {}", host);
                 suspend_and_run(terminal, &["ssh", &host])?;
@@ -238,19 +260,19 @@ async fn handle_main_key(
             }
         }
         KeyCode::Char('s') => {
-            if let Some((hi, si)) = state.selected_entry() {
-                let host = state.hosts[hi].address.clone();
-                let svc = state.service_names[si].clone();
+            if let Some(FlatEntry::Service { host_idx, svc_idx }) = state.selected_entry() {
+                let host = state.hosts[host_idx].address.clone();
+                let svc = state.service_names[svc_idx].clone();
                 log::info!("Stopping service {} on {}", svc, host);
-                run_service_action(state, &host, &svc, "stop", hi, si).await;
+                run_service_action(state, &host, &svc, "stop", host_idx, svc_idx).await;
             }
         }
         KeyCode::Char('t') => {
-            if let Some((hi, si)) = state.selected_entry() {
-                let host = state.hosts[hi].address.clone();
-                let svc = state.service_names[si].clone();
+            if let Some(FlatEntry::Service { host_idx, svc_idx }) = state.selected_entry() {
+                let host = state.hosts[host_idx].address.clone();
+                let svc = state.service_names[svc_idx].clone();
                 log::info!("Restarting service {} on {}", svc, host);
-                run_service_action(state, &host, &svc, "restart", hi, si).await;
+                run_service_action(state, &host, &svc, "restart", host_idx, svc_idx).await;
             }
         }
         _ => {}
@@ -343,11 +365,8 @@ fn spawn_full_refresh(
 
     tokio::spawn(async move {
         let mut session_mgr = SessionManager::new();
-        let (names, grid) = build_grid(&mut session_mgr, &hosts, &configs).await;
-        let _ = tx.send(RefreshResult::FullGrid {
-            service_names: names,
-            grid,
-        });
+        let grid_result = build_grid(&mut session_mgr, &hosts, &configs).await;
+        let _ = tx.send(RefreshResult::FullGrid(grid_result));
         session_mgr.close_all().await;
     });
 }

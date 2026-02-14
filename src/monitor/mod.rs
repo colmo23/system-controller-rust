@@ -1,3 +1,3 @@
 pub mod status;
 
-pub use status::{HostService, ServiceStatus};
+pub use status::{GridResult, HostService, ServiceStatus};

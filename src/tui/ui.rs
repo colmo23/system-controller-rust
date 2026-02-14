@@ -1,5 +1,4 @@
-use crate::app::AppState;
-use crate::app::Screen;
+use crate::app::{AppState, FlatEntry, Screen};
 use crate::monitor::ServiceStatus;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -53,15 +52,27 @@ fn render_service_list(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Data rows
     let rows: Vec<Row> = entries
         .iter()
-        .map(|&(hi, si)| {
-            let hs = &state.grid[hi][si];
-            let status_style = status_color(&hs.status);
+        .map(|entry| match entry {
+            FlatEntry::Service { host_idx, svc_idx } => {
+                let hs = &state.grid[*host_idx][*svc_idx];
+                let status_style = status_color(&hs.status);
 
-            Row::new(vec![
-                Cell::from(hs.service_name.as_str()),
-                Cell::from(hs.host_address.as_str()),
-                Cell::from(hs.status.display()).style(status_style),
-            ])
+                Row::new(vec![
+                    Cell::from(hs.service_name.as_str()),
+                    Cell::from(hs.host_address.as_str()),
+                    Cell::from(hs.status.display()).style(status_style),
+                ])
+            }
+            FlatEntry::UnreachableHost { host_idx } => {
+                let host = &state.hosts[*host_idx].address;
+                let style = Style::default().fg(Color::Red);
+
+                Row::new(vec![
+                    Cell::from("").style(style),
+                    Cell::from(host.as_str()).style(style),
+                    Cell::from("unreachable").style(style),
+                ])
+            }
         })
         .collect();
 
