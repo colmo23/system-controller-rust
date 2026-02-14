@@ -229,6 +229,9 @@ pub async fn build_grid(
                 (cfg, ServiceStatus::NotFound)
             };
 
+            let mut config = config;
+            config.commands.push(format!("sudo journalctl -u {}", svc_name));
+
             row.push(HostService {
                 host_address: host.address.clone(),
                 service_name: svc_name.clone(),
