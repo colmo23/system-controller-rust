@@ -7,76 +7,76 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
 
-pub fn render(frame: &mut Frame, state: &AppState) {
-    match &state.screen {
+pub fn render(frame: &mut Frame, state: &mut AppState) {
+    match state.screen.clone() {
         Screen::Main => render_main(frame, state),
         Screen::Detail {
             host_index,
             service_index,
-        } => render_detail(frame, state, *host_index, *service_index),
+        } => render_detail(frame, state, host_index, service_index),
     }
 }
 
-fn render_main(frame: &mut Frame, state: &AppState) {
+fn render_main(frame: &mut Frame, state: &mut AppState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(frame.area());
 
-    render_grid(frame, state, chunks[0]);
+    render_service_list(frame, state, chunks[0]);
     render_status_bar(frame, state, chunks[1]);
 }
 
-fn render_grid(frame: &mut Frame, state: &AppState, area: Rect) {
-    if state.hosts.is_empty() || state.service_names.is_empty() {
-        let msg = Paragraph::new("No data. Press 'r' to refresh or check your config files.")
+fn render_service_list(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let entries = state.flat_entries();
+
+    if entries.is_empty() {
+        let msg = if state.refreshing {
+            "Refreshing..."
+        } else {
+            "No data. Press 'r' to refresh or check your config files."
+        };
+        let paragraph = Paragraph::new(msg)
             .block(Block::default().borders(Borders::ALL).title("Services"));
-        frame.render_widget(msg, area);
+        frame.render_widget(paragraph, area);
         return;
     }
 
-    // Build header row
-    let mut header_cells = vec![Cell::from("Host").style(Style::default().add_modifier(Modifier::BOLD))];
-    for name in &state.service_names {
-        header_cells.push(
-            Cell::from(name.as_str()).style(Style::default().add_modifier(Modifier::BOLD)),
-        );
-    }
-    let header = Row::new(header_cells).height(1);
+    // Header
+    let header = Row::new(vec![
+        Cell::from("Service").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("Host").style(Style::default().add_modifier(Modifier::BOLD)),
+        Cell::from("Status").style(Style::default().add_modifier(Modifier::BOLD)),
+    ])
+    .height(1);
 
-    // Build data rows
-    let rows: Vec<Row> = state
-        .grid
+    // Data rows
+    let rows: Vec<Row> = entries
         .iter()
-        .enumerate()
-        .map(|(row_idx, row)| {
-            let mut cells = vec![Cell::from(state.hosts[row_idx].address.as_str())];
-            for (col_idx, hs) in row.iter().enumerate() {
-                let style = status_style(&hs.status);
-                let selected = row_idx == state.cursor_row && col_idx == state.cursor_col;
-                let style = if selected {
-                    style.add_modifier(Modifier::REVERSED)
-                } else {
-                    style
-                };
-                cells.push(Cell::from(hs.status.display()).style(style));
-            }
-            Row::new(cells)
+        .map(|&(hi, si)| {
+            let hs = &state.grid[hi][si];
+            let status_style = status_color(&hs.status);
+
+            Row::new(vec![
+                Cell::from(hs.service_name.as_str()),
+                Cell::from(hs.host_address.as_str()),
+                Cell::from(hs.status.display()).style(status_style),
+            ])
         })
         .collect();
 
-    // Column widths
-    let mut widths = vec![Constraint::Length(20)]; // host column
-    for name in &state.service_names {
-        widths.push(Constraint::Length((name.len().max(10) + 2) as u16));
-    }
+    let widths = [
+        Constraint::Length(25),
+        Constraint::Length(20),
+        Constraint::Min(10),
+    ];
 
     let table = Table::new(rows, &widths)
         .header(header)
         .block(Block::default().borders(Borders::ALL).title("Services"))
-        .row_highlight_style(Style::default().add_modifier(Modifier::BOLD));
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-    frame.render_widget(table, area);
+    frame.render_stateful_widget(table, area, &mut state.table_state);
 }
 
 fn render_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
@@ -86,20 +86,10 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
         "r:refresh  Enter:detail  c:ssh  s:stop  t:restart  q:quit"
     };
 
-    let host_info = if !state.hosts.is_empty() && !state.service_names.is_empty() {
-        format!(
-            " | {}/{}",
-            state.hosts[state.cursor_row].address,
-            state.service_names.get(state.cursor_col).map(|s| s.as_str()).unwrap_or("?")
-        )
-    } else {
-        String::new()
-    };
-
-    let bar = Paragraph::new(Line::from(vec![
-        Span::styled(status_text, Style::default().fg(Color::DarkGray)),
-        Span::styled(host_info, Style::default().fg(Color::Cyan)),
-    ]));
+    let bar = Paragraph::new(Line::from(Span::styled(
+        status_text,
+        Style::default().fg(Color::DarkGray),
+    )));
     frame.render_widget(bar, area);
 }
 
@@ -172,7 +162,7 @@ fn render_detail(frame: &mut Frame, state: &AppState, host_idx: usize, svc_idx: 
     frame.render_widget(bar, chunks[1]);
 }
 
-fn status_style(status: &ServiceStatus) -> Style {
+fn status_color(status: &ServiceStatus) -> Style {
     match status {
         ServiceStatus::Active => Style::default().fg(Color::Green),
         ServiceStatus::Failed => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),

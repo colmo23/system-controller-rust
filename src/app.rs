@@ -7,6 +7,7 @@ use crate::tui::event::{poll_event, AppEvent};
 use crate::tui::ui::render;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::widgets::TableState;
 use std::process::Command;
 use tokio::sync::mpsc;
 
@@ -32,8 +33,8 @@ pub struct AppState {
     pub service_names: Vec<String>,
     pub grid: Vec<Vec<HostService>>,
     pub screen: Screen,
-    pub cursor_row: usize,
-    pub cursor_col: usize,
+    pub cursor: usize,
+    pub table_state: TableState,
     pub detail_cursor: usize,
     pub refreshing: bool,
     pub should_quit: bool,
@@ -47,20 +48,33 @@ impl AppState {
             service_names: Vec::new(),
             grid: Vec::new(),
             screen: Screen::Main,
-            cursor_row: 0,
-            cursor_col: 0,
+            cursor: 0,
+            table_state: TableState::default().with_selected(0),
             detail_cursor: 0,
             refreshing: false,
             should_quit: false,
         }
     }
 
-    fn max_rows(&self) -> usize {
-        self.hosts.len()
+    /// Build a flat list of (host_idx, svc_idx) for every cell in the grid.
+    pub fn flat_entries(&self) -> Vec<(usize, usize)> {
+        let mut entries = Vec::new();
+        for (host_idx, row) in self.grid.iter().enumerate() {
+            for (svc_idx, _) in row.iter().enumerate() {
+                entries.push((host_idx, svc_idx));
+            }
+        }
+        entries
     }
 
-    fn max_cols(&self) -> usize {
-        self.service_names.len()
+    /// Total number of entries in the flat list.
+    pub fn flat_len(&self) -> usize {
+        self.grid.iter().map(|r| r.len()).sum()
+    }
+
+    /// Get the (host_idx, svc_idx) for the current cursor position.
+    pub fn selected_entry(&self) -> Option<(usize, usize)> {
+        self.flat_entries().get(self.cursor).copied()
     }
 
     /// Get the list of detail items (files + commands) for the current detail view.
@@ -112,7 +126,8 @@ pub async fn run(
     spawn_full_refresh(&mut state, &refresh_tx);
 
     loop {
-        terminal.draw(|f| render(f, &state))?;
+        state.table_state.select(Some(state.cursor));
+        terminal.draw(|f| render(f, &mut state))?;
 
         // Drain async refresh results
         while let Ok(result) = refresh_rx.try_recv() {
@@ -125,6 +140,11 @@ pub async fn run(
                     state.service_names = service_names;
                     state.grid = grid;
                     state.refreshing = false;
+                    // Clamp cursor
+                    let len = state.flat_len();
+                    if len > 0 && state.cursor >= len {
+                        state.cursor = len - 1;
+                    }
                 }
             }
         }
@@ -181,35 +201,26 @@ async fn handle_main_key(
             state.should_quit = true;
         }
         KeyCode::Up => {
-            if state.cursor_row > 0 {
-                state.cursor_row -= 1;
+            if state.cursor > 0 {
+                state.cursor -= 1;
             }
         }
         KeyCode::Down => {
-            if state.cursor_row + 1 < state.max_rows() {
-                state.cursor_row += 1;
-            }
-        }
-        KeyCode::Left => {
-            if state.cursor_col > 0 {
-                state.cursor_col -= 1;
-            }
-        }
-        KeyCode::Right => {
-            if state.cursor_col + 1 < state.max_cols() {
-                state.cursor_col += 1;
+            let len = state.flat_len();
+            if len > 0 && state.cursor + 1 < len {
+                state.cursor += 1;
             }
         }
         KeyCode::Enter => {
-            if !state.grid.is_empty() && !state.service_names.is_empty() {
+            if let Some((hi, si)) = state.selected_entry() {
                 log::info!(
                     "Opening detail view for {}:{}",
-                    state.hosts[state.cursor_row].address,
-                    state.service_names[state.cursor_col]
+                    state.hosts[hi].address,
+                    state.service_names[si]
                 );
                 state.screen = Screen::Detail {
-                    host_index: state.cursor_row,
-                    service_index: state.cursor_col,
+                    host_index: hi,
+                    service_index: si,
                 };
                 state.detail_cursor = 0;
             }
@@ -219,36 +230,27 @@ async fn handle_main_key(
             spawn_full_refresh(state, refresh_tx);
         }
         KeyCode::Char('c') => {
-            if !state.hosts.is_empty() {
-                let host = state.hosts[state.cursor_row].address.clone();
+            if let Some((hi, _)) = state.selected_entry() {
+                let host = state.hosts[hi].address.clone();
                 log::info!("Opening SSH session to {}", host);
                 suspend_and_run(terminal, &["ssh", &host])?;
                 log::info!("Returned from SSH session to {}", host);
             }
         }
         KeyCode::Char('s') => {
-            if !state.grid.is_empty() {
-                let host = state.hosts[state.cursor_row].address.clone();
-                let svc = state.service_names[state.cursor_col].clone();
+            if let Some((hi, si)) = state.selected_entry() {
+                let host = state.hosts[hi].address.clone();
+                let svc = state.service_names[si].clone();
                 log::info!("Stopping service {} on {}", svc, host);
-                run_service_action(state, &host, &svc, "stop", state.cursor_row, state.cursor_col)
-                    .await;
+                run_service_action(state, &host, &svc, "stop", hi, si).await;
             }
         }
         KeyCode::Char('t') => {
-            if !state.grid.is_empty() {
-                let host = state.hosts[state.cursor_row].address.clone();
-                let svc = state.service_names[state.cursor_col].clone();
+            if let Some((hi, si)) = state.selected_entry() {
+                let host = state.hosts[hi].address.clone();
+                let svc = state.service_names[si].clone();
                 log::info!("Restarting service {} on {}", svc, host);
-                run_service_action(
-                    state,
-                    &host,
-                    &svc,
-                    "restart",
-                    state.cursor_row,
-                    state.cursor_col,
-                )
-                .await;
+                run_service_action(state, &host, &svc, "restart", hi, si).await;
             }
         }
         _ => {}
