@@ -1,6 +1,6 @@
 use crate::config::{Host, ServiceConfig};
 use crate::monitor::status::{build_grid, refresh_cell};
-use crate::monitor::{GridResult, HostService};
+use crate::monitor::{GridResult, HostService, ServiceStatus};
 use crate::ssh::SessionManager;
 use crate::tui;
 use crate::tui::event::{poll_event, AppEvent};
@@ -63,19 +63,28 @@ impl AppState {
     }
 
     /// Build a flat list of entries for the main screen.
-    /// Unreachable hosts get a single entry; reachable hosts get one entry per service.
+    /// Unreachable hosts and failed services are sorted to the top.
     pub fn flat_entries(&self) -> Vec<FlatEntry> {
-        let mut entries = Vec::new();
+        let mut failed = Vec::new();
+        let mut rest = Vec::new();
+
         for (host_idx, row) in self.grid.iter().enumerate() {
             if self.unreachable_hosts.contains(&host_idx) {
-                entries.push(FlatEntry::UnreachableHost { host_idx });
+                failed.push(FlatEntry::UnreachableHost { host_idx });
             } else {
-                for (svc_idx, _) in row.iter().enumerate() {
-                    entries.push(FlatEntry::Service { host_idx, svc_idx });
+                for (svc_idx, hs) in row.iter().enumerate() {
+                    let entry = FlatEntry::Service { host_idx, svc_idx };
+                    if hs.status == ServiceStatus::Failed {
+                        failed.push(entry);
+                    } else {
+                        rest.push(entry);
+                    }
                 }
             }
         }
-        entries
+
+        failed.extend(rest);
+        failed
     }
 
     /// Total number of entries in the flat list.
