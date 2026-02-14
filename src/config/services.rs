@@ -46,5 +46,16 @@ pub fn parse_services(path: &str) -> Result<Vec<ServiceConfig>> {
         .collect();
 
     configs.sort_by(|a, b| a.name_pattern.cmp(&b.name_pattern));
+
+    for cfg in &configs {
+        log::debug!(
+            "Service config: {} (glob={}, files={}, commands={})",
+            cfg.name_pattern,
+            cfg.is_glob,
+            cfg.files.len(),
+            cfg.commands.len()
+        );
+    }
+
     Ok(configs)
 }

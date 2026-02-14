@@ -64,6 +64,7 @@ pub async fn expand_globs(
 
     // If we have globs, fetch the unit list once
     let unit_list: Vec<String> = if has_globs {
+        log::debug!("Fetching unit list from {} for glob expansion", host.address);
         match session_mgr
             .run_command(
                 &host.address,
@@ -71,14 +72,21 @@ pub async fn expand_globs(
             )
             .await
         {
-            Ok(output) => output
-                .lines()
-                .filter_map(|line| {
-                    let unit = line.split_whitespace().next()?;
-                    Some(unit.strip_suffix(".service").unwrap_or(unit).to_string())
-                })
-                .collect(),
-            Err(_) => Vec::new(),
+            Ok(output) => {
+                let units: Vec<String> = output
+                    .lines()
+                    .filter_map(|line| {
+                        let unit = line.split_whitespace().next()?;
+                        Some(unit.strip_suffix(".service").unwrap_or(unit).to_string())
+                    })
+                    .collect();
+                log::debug!("Found {} units on {}", units.len(), host.address);
+                units
+            }
+            Err(e) => {
+                log::error!("Failed to list units on {}: {}", host.address, e);
+                Vec::new()
+            }
         }
     } else {
         Vec::new()
@@ -92,6 +100,13 @@ pub async fn expand_globs(
                 .cloned()
                 .collect();
             matched.sort();
+            log::info!(
+                "Glob '{}' matched {} services on {}: {:?}",
+                config.name_pattern,
+                matched.len(),
+                host.address,
+                matched
+            );
             for name in matched {
                 results.push((name, config.clone()));
             }
@@ -119,6 +134,8 @@ pub async fn fetch_statuses(
         .collect();
     let cmd = format!("systemctl is-active {}", svc_args.join(" "));
 
+    log::debug!("Fetching status for {} services on {}", service_names.len(), host);
+
     match session_mgr.run_command(host, &cmd).await {
         Ok(output) => {
             let statuses: Vec<ServiceStatus> = output
@@ -130,9 +147,13 @@ pub async fn fetch_statuses(
             while result.len() < service_names.len() {
                 result.push(ServiceStatus::Unknown);
             }
+            for (i, name) in service_names.iter().enumerate() {
+                log::debug!("  {}:{} = {:?}", host, name, result[i]);
+            }
             result
         }
         Err(e) => {
+            log::error!("Failed to fetch statuses on {}: {}", host, e);
             vec![ServiceStatus::Error(e.to_string()); service_names.len()]
         }
     }
@@ -145,6 +166,8 @@ pub async fn build_grid(
     hosts: &[Host],
     service_configs: &[ServiceConfig],
 ) -> (Vec<String>, Vec<Vec<HostService>>) {
+    log::info!("Building grid for {} hosts, {} service configs", hosts.len(), service_configs.len());
+
     // First pass: expand globs on all hosts, collect the union of service names
     let mut all_expanded: Vec<Vec<(String, ServiceConfig)>> = Vec::new();
     let mut all_service_names: Vec<String> = Vec::new();
@@ -158,6 +181,8 @@ pub async fn build_grid(
         }
         all_expanded.push(expanded);
     }
+
+    log::info!("Service columns after glob expansion: {:?}", all_service_names);
 
     // Build grid
     let mut grid: Vec<Vec<HostService>> = Vec::new();
@@ -214,6 +239,7 @@ pub async fn build_grid(
         grid.push(row);
     }
 
+    log::info!("Grid built: {} rows x {} columns", grid.len(), all_service_names.len());
     (all_service_names, grid)
 }
 
@@ -223,6 +249,7 @@ pub async fn refresh_cell(
     host: &str,
     service_name: &str,
 ) -> ServiceStatus {
+    log::debug!("Refreshing status for {}:{}", host, service_name);
     let statuses = fetch_statuses(session_mgr, host, &[service_name.to_string()]).await;
     statuses.into_iter().next().unwrap_or(ServiceStatus::Unknown)
 }

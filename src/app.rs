@@ -6,7 +6,7 @@ use crate::tui;
 use crate::tui::event::{poll_event, AppEvent};
 use crate::tui::ui::render;
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::process::Command;
 use tokio::sync::mpsc;
 
@@ -107,21 +107,9 @@ pub async fn run(
     // Set up async refresh channel
     let (refresh_tx, mut refresh_rx) = mpsc::unbounded_channel::<RefreshResult>();
 
-    // Initial refresh
-    {
-        let mut session_mgr = SessionManager::new();
-        state.refreshing = true;
-        terminal.draw(|f| render(f, &state))?;
-
-        let (names, grid) =
-            build_grid(&mut session_mgr, &state.hosts, &state.service_configs).await;
-        state.service_names = names;
-        state.grid = grid;
-        state.refreshing = false;
-
-        // Keep session manager for later use - we'll recreate as needed
-        session_mgr.close_all().await;
-    }
+    // Initial refresh (non-blocking so the UI stays responsive)
+    log::info!("Starting initial refresh");
+    spawn_full_refresh(&mut state, &refresh_tx);
 
     loop {
         terminal.draw(|f| render(f, &state))?;
@@ -133,6 +121,7 @@ pub async fn run(
                     service_names,
                     grid,
                 } => {
+                    log::info!("Refresh complete: {} services across {} hosts", service_names.len(), grid.len());
                     state.service_names = service_names;
                     state.grid = grid;
                     state.refreshing = false;
@@ -183,7 +172,12 @@ async fn handle_main_key(
     terminal: &mut tui::Tui,
 ) -> Result<()> {
     match key.code {
-        KeyCode::Char('q') => {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            log::info!("Quit requested");
+            state.should_quit = true;
+        }
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            log::info!("Ctrl+C quit requested");
             state.should_quit = true;
         }
         KeyCode::Up => {
@@ -208,6 +202,11 @@ async fn handle_main_key(
         }
         KeyCode::Enter => {
             if !state.grid.is_empty() && !state.service_names.is_empty() {
+                log::info!(
+                    "Opening detail view for {}:{}",
+                    state.hosts[state.cursor_row].address,
+                    state.service_names[state.cursor_col]
+                );
                 state.screen = Screen::Detail {
                     host_index: state.cursor_row,
                     service_index: state.cursor_col,
@@ -216,18 +215,22 @@ async fn handle_main_key(
             }
         }
         KeyCode::Char('r') => {
+            log::info!("Full refresh requested");
             spawn_full_refresh(state, refresh_tx);
         }
         KeyCode::Char('c') => {
             if !state.hosts.is_empty() {
                 let host = state.hosts[state.cursor_row].address.clone();
+                log::info!("Opening SSH session to {}", host);
                 suspend_and_run(terminal, &["ssh", &host])?;
+                log::info!("Returned from SSH session to {}", host);
             }
         }
         KeyCode::Char('s') => {
             if !state.grid.is_empty() {
                 let host = state.hosts[state.cursor_row].address.clone();
                 let svc = state.service_names[state.cursor_col].clone();
+                log::info!("Stopping service {} on {}", svc, host);
                 run_service_action(state, &host, &svc, "stop", state.cursor_row, state.cursor_col)
                     .await;
             }
@@ -236,6 +239,7 @@ async fn handle_main_key(
             if !state.grid.is_empty() {
                 let host = state.hosts[state.cursor_row].address.clone();
                 let svc = state.service_names[state.cursor_col].clone();
+                log::info!("Restarting service {} on {}", svc, host);
                 run_service_action(
                     state,
                     &host,
@@ -263,7 +267,12 @@ async fn handle_detail_key(
     let item_count = state.detail_item_count(host_idx, svc_idx);
 
     match key.code {
-        KeyCode::Char('q') => {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            log::info!("Ctrl+C quit requested from detail screen");
+            state.should_quit = true;
+        }
+        KeyCode::Char('q') | KeyCode::Esc => {
+            log::info!("Returning to main screen");
             state.screen = Screen::Main;
             state.detail_cursor = 0;
         }
@@ -283,10 +292,12 @@ async fn handle_detail_key(
                 let host = &state.hosts[host_idx].address;
                 match item {
                     DetailItem::File(path) => {
+                        log::info!("Viewing file {} on {}", path, host);
                         let cmd = format!("cat {}", path);
                         open_in_vim(terminal, host, &cmd).await?;
                     }
                     DetailItem::Command(cmd) => {
+                        log::info!("Running command '{}' on {} and viewing in vim", cmd, host);
                         open_in_vim(terminal, host, cmd).await?;
                     }
                     DetailItem::Header(_) => {}
@@ -349,10 +360,14 @@ async fn run_service_action(
 ) {
     let mut session_mgr = SessionManager::new();
     let cmd = format!("sudo systemctl {} {}", action, service);
-    let _ = session_mgr.run_command(host, &cmd).await;
+    match session_mgr.run_command(host, &cmd).await {
+        Ok(_) => log::info!("Service action '{}' succeeded for {} on {}", action, service, host),
+        Err(e) => log::error!("Service action '{}' failed for {} on {}: {}", action, service, host, e),
+    }
 
     // Refresh the cell
     let status = refresh_cell(&mut session_mgr, host, service).await;
+    log::info!("Status after {} for {}:{} = {:?}", action, host, service, status);
     if host_idx < state.grid.len() && svc_idx < state.grid[host_idx].len() {
         state.grid[host_idx][svc_idx].status = status;
     }

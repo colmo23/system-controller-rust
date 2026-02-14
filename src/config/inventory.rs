@@ -30,5 +30,10 @@ pub fn parse_inventory(path: &str) -> Result<Vec<Host>> {
     }
 
     anyhow::ensure!(!hosts.is_empty(), "No hosts found in inventory file: {}", path);
+
+    for host in &hosts {
+        log::debug!("Inventory host: {} (group: {})", host.address, host.group);
+    }
+
     Ok(hosts)
 }

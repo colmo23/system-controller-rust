@@ -3,7 +3,27 @@
 A terminal user interface (TUI) for monitoring systemd services across remote hosts via SSH.
 
 
+## Building
+
+Requires Rust 1.70+ and a working `ssh` client on your system.
+
+```bash
+cargo build --release
+```
+
+The binary will be at `target/release/system-controller`.
+
 ## Usage
+
+```bash
+system-controller [--log <logfile>] <inventory.ini> <services.yaml>
+```
+
+Use `--log` to write diagnostic logs to a file:
+
+```bash
+system-controller --log /tmp/sctl.log inventory.ini services.yaml
+```
 
 The application requires two input files:
 
