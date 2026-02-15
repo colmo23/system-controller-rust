@@ -260,7 +260,7 @@ pub async fn build_grid(
             };
 
             let mut config = config;
-            config.commands.push(format!("sudo journalctl -u {}", svc_name));
+            config.commands.push(format!("journalctl -u {}", svc_name));
 
             row.push(HostService {
                 host_address: host.address.clone(),
