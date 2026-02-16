@@ -6,21 +6,27 @@ use tokio::time::timeout;
 
 pub struct SessionManager {
     sessions: HashMap<String, Session>,
+    ssh_user: Option<String>,
 }
 
 impl SessionManager {
-    pub fn new() -> Self {
+    pub fn new(ssh_user: Option<String>) -> Self {
         Self {
             sessions: HashMap::new(),
+            ssh_user,
         }
     }
 
     pub async fn get_session(&mut self, host: &str) -> Result<&Session> {
         if !self.sessions.contains_key(host) {
-            log::info!("Opening SSH connection to {}", host);
+            let dest = match &self.ssh_user {
+                Some(user) => format!("ssh://{}@{}", user, host),
+                None => format!("ssh://{}", host),
+            };
+            log::info!("Opening SSH connection to {}", dest);
             let session = timeout(
                 Duration::from_secs(2),
-                Session::connect_mux(format!("ssh://{}", host), KnownHosts::Accept),
+                Session::connect_mux(dest, KnownHosts::Accept),
             )
             .await
             .with_context(|| {

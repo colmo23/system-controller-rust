@@ -43,10 +43,11 @@ pub struct AppState {
     pub detail_cursor: usize,
     pub refreshing: bool,
     pub should_quit: bool,
+    pub ssh_user: Option<String>,
 }
 
 impl AppState {
-    pub fn new(hosts: Vec<Host>, service_configs: Vec<ServiceConfig>) -> Self {
+    pub fn new(hosts: Vec<Host>, service_configs: Vec<ServiceConfig>, ssh_user: Option<String>) -> Self {
         Self {
             hosts,
             service_configs,
@@ -59,6 +60,7 @@ impl AppState {
             detail_cursor: 0,
             refreshing: false,
             should_quit: false,
+            ssh_user,
         }
     }
 
@@ -146,8 +148,9 @@ enum DetailItem {
 pub async fn run(
     hosts: Vec<Host>,
     service_configs: Vec<ServiceConfig>,
+    ssh_user: Option<String>,
 ) -> Result<()> {
-    let mut state = AppState::new(hosts, service_configs);
+    let mut state = AppState::new(hosts, service_configs, ssh_user);
     let mut terminal = tui::init()?;
 
     // Set up async refresh channel
@@ -263,9 +266,13 @@ async fn handle_main_key(
             };
             if let Some(hi) = host_idx {
                 let host = state.hosts[hi].address.clone();
-                log::info!("Opening SSH session to {}", host);
-                suspend_and_run(terminal, &["ssh", &host])?;
-                log::info!("Returned from SSH session to {}", host);
+                let ssh_dest = match &state.ssh_user {
+                    Some(user) => format!("{}@{}", user, host),
+                    None => host.clone(),
+                };
+                log::info!("Opening SSH session to {}", ssh_dest);
+                suspend_and_run(terminal, &["ssh", &ssh_dest])?;
+                log::info!("Returned from SSH session to {}", ssh_dest);
             }
         }
         KeyCode::Char('s') => {
@@ -327,11 +334,11 @@ async fn handle_detail_key(
                     DetailItem::File(path) => {
                         log::info!("Viewing file {} on {}", path, host);
                         let cmd = format!("cat {}", path);
-                        open_in_vim(terminal, host, &cmd).await?;
+                        open_in_vim(terminal, host, &cmd, &state.ssh_user).await?;
                     }
                     DetailItem::Command(cmd) => {
                         log::info!("Running command '{}' on {} and viewing in vim", cmd, host);
-                        open_in_vim(terminal, host, cmd).await?;
+                        open_in_vim(terminal, host, cmd, &state.ssh_user).await?;
                     }
                     DetailItem::Header(_) => {}
                 }
@@ -342,7 +349,11 @@ async fn handle_detail_key(
         }
         KeyCode::Char('c') => {
             let host = state.hosts[host_idx].address.clone();
-            suspend_and_run(terminal, &["ssh", &host])?;
+            let ssh_dest = match &state.ssh_user {
+                Some(user) => format!("{}@{}", user, host),
+                None => host.clone(),
+            };
+            suspend_and_run(terminal, &["ssh", &ssh_dest])?;
         }
         KeyCode::Char('s') => {
             let host = state.hosts[host_idx].address.clone();
@@ -370,10 +381,11 @@ fn spawn_full_refresh(
 
     let hosts = state.hosts.clone();
     let configs = state.service_configs.clone();
+    let ssh_user = state.ssh_user.clone();
     let tx = refresh_tx.clone();
 
     tokio::spawn(async move {
-        let mut session_mgr = SessionManager::new();
+        let mut session_mgr = SessionManager::new(ssh_user);
         let grid_result = build_grid(&mut session_mgr, &hosts, &configs).await;
         let _ = tx.send(RefreshResult::FullGrid(grid_result));
         session_mgr.close_all().await;
@@ -388,7 +400,7 @@ async fn run_service_action(
     host_idx: usize,
     svc_idx: usize,
 ) {
-    let mut session_mgr = SessionManager::new();
+    let mut session_mgr = SessionManager::new(state.ssh_user.clone());
     let cmd = format!("sudo systemctl {} {}", action, service);
     match session_mgr.run_command(host, &cmd).await {
         Ok(_) => log::info!("Service action '{}' succeeded for {} on {}", action, service, host),
@@ -408,9 +420,10 @@ async fn open_in_vim(
     terminal: &mut tui::Tui,
     host: &str,
     cmd: &str,
+    ssh_user: &Option<String>,
 ) -> Result<()> {
     // Run the command on the remote host, write output to a temp file, open in vim
-    let mut session_mgr = SessionManager::new();
+    let mut session_mgr = SessionManager::new(ssh_user.clone());
     let output = session_mgr
         .run_command(host, cmd)
         .await

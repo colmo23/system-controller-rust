@@ -10,7 +10,7 @@ use std::env;
 use std::panic;
 
 fn print_usage(program: &str) {
-    eprintln!("Usage: {} [--log <logfile>] <inventory.ini> <services.yaml>", program);
+    eprintln!("Usage: {} [--log <logfile>] [--user <username>] <inventory.ini> <services.yaml>", program);
 }
 
 #[tokio::main]
@@ -24,8 +24,9 @@ async fn main() -> Result<()> {
 
     let args: Vec<String> = env::args().collect();
 
-    // Parse optional --log <file> and positional args
+    // Parse optional --log <file>, --user <username>, and positional args
     let mut log_file: Option<String> = None;
+    let mut ssh_user: Option<String> = None;
     let mut positional = Vec::new();
     let mut i = 1;
     while i < args.len() {
@@ -35,6 +36,13 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
             log_file = Some(args[i + 1].clone());
+            i += 2;
+        } else if args[i] == "--user" {
+            if i + 1 >= args.len() {
+                print_usage(&args[0]);
+                std::process::exit(1);
+            }
+            ssh_user = Some(args[i + 1].clone());
             i += 2;
         } else {
             positional.push(args[i].clone());
@@ -65,7 +73,7 @@ async fn main() -> Result<()> {
         .context("Failed to parse services config")?;
     log::info!("Loaded {} service configs", service_configs.len());
 
-    app::run(hosts, service_configs).await?;
+    app::run(hosts, service_configs, ssh_user).await?;
 
     log::info!("system-controller exiting");
     Ok(())

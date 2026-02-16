@@ -90,3 +90,11 @@ services:
 
 Service names support glob patterns (`*`, `?`, `[`). On each host, patterns are matched against the available systemd units and expanded into individual rows. For example, `docker-*` on a host running `docker-api` and `docker-worker` produces two rows, each inheriting the configured `commands` and `files` from the pattern entry.
 
+
+## TODOs
+
+Allow for different formats of ini file, where multiple entries are on the same line
+
+If service is not present on the remote machine then do not show it on the Main Screen
+
+If ssh times out or has connection error show the status as unreachable in Main Screen. If authentication error then show that status on Main Screen
