@@ -245,7 +245,7 @@ async fn handle_main_key(
                 log::info!(
                     "Opening detail view for {}:{}",
                     state.hosts[host_idx].address,
-                    state.service_names[svc_idx]
+                    state.grid[host_idx][svc_idx].service_name
                 );
                 state.screen = Screen::Detail {
                     host_index: host_idx,
@@ -278,7 +278,7 @@ async fn handle_main_key(
         KeyCode::Char('s') => {
             if let Some(FlatEntry::Service { host_idx, svc_idx }) = state.selected_entry() {
                 let host = state.hosts[host_idx].address.clone();
-                let svc = state.service_names[svc_idx].clone();
+                let svc = state.grid[host_idx][svc_idx].service_name.clone();
                 log::info!("Stopping service {} on {}", svc, host);
                 run_service_action(state, &host, &svc, "stop", host_idx, svc_idx).await;
             }
@@ -286,7 +286,7 @@ async fn handle_main_key(
         KeyCode::Char('t') => {
             if let Some(FlatEntry::Service { host_idx, svc_idx }) = state.selected_entry() {
                 let host = state.hosts[host_idx].address.clone();
-                let svc = state.service_names[svc_idx].clone();
+                let svc = state.grid[host_idx][svc_idx].service_name.clone();
                 log::info!("Restarting service {} on {}", svc, host);
                 run_service_action(state, &host, &svc, "restart", host_idx, svc_idx).await;
             }
@@ -357,12 +357,12 @@ async fn handle_detail_key(
         }
         KeyCode::Char('s') => {
             let host = state.hosts[host_idx].address.clone();
-            let svc = state.service_names[svc_idx].clone();
+            let svc = state.grid[host_idx][svc_idx].service_name.clone();
             run_service_action(state, &host, &svc, "stop", host_idx, svc_idx).await;
         }
         KeyCode::Char('t') => {
             let host = state.hosts[host_idx].address.clone();
-            let svc = state.service_names[svc_idx].clone();
+            let svc = state.grid[host_idx][svc_idx].service_name.clone();
             run_service_action(state, &host, &svc, "restart", host_idx, svc_idx).await;
         }
         _ => {}

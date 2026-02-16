@@ -1,16 +1,16 @@
 services:
-  nginx:
+  nginx*:
     files:
       - /etc/nginx/nginx.conf
       - /var/log/nginx/error.log
     commands:
       - nginx -T
-  postgresql:
+  postgresql*:
     files:
       - /etc/postgresql/14/main/postgresql.conf
     commands:
       - pg_isready
-  redis:
+  redis*:
     commands:
       - redis-cli ping
   s*:

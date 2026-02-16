@@ -239,35 +239,29 @@ pub async fn build_grid(
 
         let mut row = Vec::new();
         for svc_name in &all_service_names {
-            let (config, status) = if let Some(cfg) = expanded_map.get(svc_name.as_str()) {
-                let st = status_map
+            if let Some(cfg) = expanded_map.get(svc_name.as_str()) {
+                let status = status_map
                     .remove(svc_name)
                     .unwrap_or(ServiceStatus::Unknown);
-                ((*cfg).clone(), st)
-            } else {
-                // This host doesn't have this service (e.g., glob didn't match)
-                let cfg = service_configs
-                    .iter()
-                    .find(|c| c.name_pattern == *svc_name || (c.is_glob && glob_match(&c.name_pattern, svc_name)))
-                    .cloned()
-                    .unwrap_or(ServiceConfig {
-                        name_pattern: svc_name.clone(),
-                        files: Vec::new(),
-                        commands: Vec::new(),
-                        is_glob: false,
-                    });
-                (cfg, ServiceStatus::NotFound)
-            };
 
-            let mut config = config;
-            config.commands.push(format!("journalctl -u {}", svc_name));
+                // Skip services that are not present on this host
+                if status == ServiceStatus::NotFound {
+                    log::debug!("Skipping {} on {} (not found)", svc_name, host.address);
+                    continue;
+                }
 
-            row.push(HostService {
-                host_address: host.address.clone(),
-                service_name: svc_name.clone(),
-                config,
-                status,
-            });
+                let mut config = (*cfg).clone();
+                config.commands.push(format!("systemctl status {}", svc_name));
+                config.commands.push(format!("journalctl -u {}", svc_name));
+
+                row.push(HostService {
+                    host_address: host.address.clone(),
+                    service_name: svc_name.clone(),
+                    config,
+                    status,
+                });
+            }
+            // If not in expanded_map, this host doesn't have this service at all — skip it
         }
         grid.push(row);
     }
