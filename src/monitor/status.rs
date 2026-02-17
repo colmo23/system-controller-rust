@@ -1,7 +1,7 @@
 use crate::config::{Host, ServiceConfig};
 use crate::ssh::SessionManager;
 use glob_match::glob_match;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServiceStatus {
@@ -164,7 +164,19 @@ pub async fn fetch_statuses(
 pub struct GridResult {
     pub service_names: Vec<String>,
     pub grid: Vec<Vec<HostService>>,
-    pub unreachable_hosts: HashSet<usize>,
+    pub unreachable_hosts: HashMap<usize, String>,
+}
+
+/// Classify an SSH error into a user-friendly reason string.
+fn classify_ssh_error(err: &str) -> &'static str {
+    let lower = err.to_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        "connection request timed out"
+    } else if lower.contains("permission denied") || lower.contains("authentication") || lower.contains("auth") {
+        "authentication error"
+    } else {
+        "connection error"
+    }
 }
 
 /// Build the initial grid: expand globs, then fetch all statuses.
@@ -176,7 +188,7 @@ pub async fn build_grid(
 ) -> GridResult {
     log::info!("Building grid for {} hosts, {} service configs", hosts.len(), service_configs.len());
 
-    let mut unreachable_hosts: HashSet<usize> = HashSet::new();
+    let mut unreachable_hosts: HashMap<usize, String> = HashMap::new();
 
     // First pass: probe each host, expand globs on reachable ones
     let mut all_expanded: Vec<Vec<(String, ServiceConfig)>> = Vec::new();
@@ -196,8 +208,10 @@ pub async fn build_grid(
                 all_expanded.push(expanded);
             }
             Err(e) => {
-                log::warn!("Host {} is unreachable: {}", host.address, e);
-                unreachable_hosts.insert(host_idx);
+                let err_msg = format!("{}", e);
+                let reason = classify_ssh_error(&err_msg);
+                log::warn!("Host {} is unreachable ({}): {}", host.address, reason, err_msg);
+                unreachable_hosts.insert(host_idx, reason.to_string());
                 all_expanded.push(Vec::new());
             }
         }
@@ -205,14 +219,14 @@ pub async fn build_grid(
 
     log::info!("Service columns after glob expansion: {:?}", all_service_names);
     if !unreachable_hosts.is_empty() {
-        log::info!("Unreachable hosts: {:?}", unreachable_hosts.iter().map(|&i| &hosts[i].address).collect::<Vec<_>>());
+        log::info!("Unreachable hosts: {:?}", unreachable_hosts.iter().map(|(&i, reason)| format!("{} ({})", &hosts[i].address, reason)).collect::<Vec<_>>());
     }
 
     // Build grid
     let mut grid: Vec<Vec<HostService>> = Vec::new();
 
     for (host_idx, host) in hosts.iter().enumerate() {
-        if unreachable_hosts.contains(&host_idx) {
+        if unreachable_hosts.contains_key(&host_idx) {
             // Empty row for unreachable hosts
             grid.push(Vec::new());
             continue;

@@ -8,7 +8,7 @@ use crate::tui::ui::render;
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::process::Command;
 use tokio::sync::mpsc;
 
@@ -25,10 +25,10 @@ pub enum RefreshResult {
     FullGrid(GridResult),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum FlatEntry {
     Service { host_idx: usize, svc_idx: usize },
-    UnreachableHost { host_idx: usize },
+    UnreachableHost { host_idx: usize, reason: String },
 }
 
 pub struct AppState {
@@ -36,7 +36,7 @@ pub struct AppState {
     pub service_configs: Vec<ServiceConfig>,
     pub service_names: Vec<String>,
     pub grid: Vec<Vec<HostService>>,
-    pub unreachable_hosts: HashSet<usize>,
+    pub unreachable_hosts: HashMap<usize, String>,
     pub screen: Screen,
     pub cursor: usize,
     pub table_state: TableState,
@@ -53,7 +53,7 @@ impl AppState {
             service_configs,
             service_names: Vec::new(),
             grid: Vec::new(),
-            unreachable_hosts: HashSet::new(),
+            unreachable_hosts: HashMap::new(),
             screen: Screen::Main,
             cursor: 0,
             table_state: TableState::default().with_selected(0),
@@ -71,8 +71,8 @@ impl AppState {
         let mut rest = Vec::new();
 
         for (host_idx, row) in self.grid.iter().enumerate() {
-            if self.unreachable_hosts.contains(&host_idx) {
-                failed.push(FlatEntry::UnreachableHost { host_idx });
+            if let Some(reason) = self.unreachable_hosts.get(&host_idx) {
+                failed.push(FlatEntry::UnreachableHost { host_idx, reason: reason.clone() });
             } else {
                 for (svc_idx, hs) in row.iter().enumerate() {
                     let entry = FlatEntry::Service { host_idx, svc_idx };
@@ -96,7 +96,7 @@ impl AppState {
 
     /// Get the flat entry at the current cursor position.
     pub fn selected_entry(&self) -> Option<FlatEntry> {
-        self.flat_entries().get(self.cursor).copied()
+        self.flat_entries().into_iter().nth(self.cursor)
     }
 
     /// Get the list of detail items (files + commands) for the current detail view.
@@ -261,7 +261,7 @@ async fn handle_main_key(
         KeyCode::Char('c') => {
             let host_idx = match state.selected_entry() {
                 Some(FlatEntry::Service { host_idx, .. }) => Some(host_idx),
-                Some(FlatEntry::UnreachableHost { host_idx }) => Some(host_idx),
+                Some(FlatEntry::UnreachableHost { host_idx, .. }) => Some(host_idx),
                 None => None,
             };
             if let Some(hi) = host_idx {

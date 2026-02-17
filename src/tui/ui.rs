@@ -63,14 +63,14 @@ fn render_service_list(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     Cell::from(hs.status.display()).style(status_style),
                 ])
             }
-            FlatEntry::UnreachableHost { host_idx } => {
+            FlatEntry::UnreachableHost { host_idx, reason } => {
                 let host = &state.hosts[*host_idx].address;
                 let style = Style::default().fg(Color::Red);
 
                 Row::new(vec![
                     Cell::from("").style(style),
                     Cell::from(host.as_str()).style(style),
-                    Cell::from("unreachable").style(style),
+                    Cell::from(reason.as_str()).style(style),
                 ])
             }
         })
