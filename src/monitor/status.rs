@@ -288,6 +288,91 @@ pub async fn build_grid(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- ServiceStatus::from_str ---
+
+    #[test]
+    fn test_from_str_active() {
+        assert_eq!(ServiceStatus::from_str("active"), ServiceStatus::Active);
+        assert_eq!(ServiceStatus::from_str("  active  "), ServiceStatus::Active);
+    }
+
+    #[test]
+    fn test_from_str_inactive() {
+        assert_eq!(ServiceStatus::from_str("inactive"), ServiceStatus::Inactive);
+    }
+
+    #[test]
+    fn test_from_str_failed() {
+        assert_eq!(ServiceStatus::from_str("failed"), ServiceStatus::Failed);
+    }
+
+    #[test]
+    fn test_from_str_not_found_dash() {
+        assert_eq!(ServiceStatus::from_str("not-found"), ServiceStatus::NotFound);
+    }
+
+    #[test]
+    fn test_from_str_not_found_space() {
+        assert_eq!(ServiceStatus::from_str("not found"), ServiceStatus::NotFound);
+    }
+
+    #[test]
+    fn test_from_str_not_found_in_message() {
+        assert_eq!(
+            ServiceStatus::from_str("Unit nginx.service could not be found"),
+            ServiceStatus::NotFound
+        );
+    }
+
+    #[test]
+    fn test_from_str_empty_is_unknown() {
+        assert_eq!(ServiceStatus::from_str(""), ServiceStatus::Unknown);
+        assert_eq!(ServiceStatus::from_str("   "), ServiceStatus::Unknown);
+    }
+
+    #[test]
+    fn test_from_str_unrecognised_is_error() {
+        match ServiceStatus::from_str("activating") {
+            ServiceStatus::Error(msg) => assert_eq!(msg, "activating"),
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    // --- ServiceStatus::display ---
+
+    #[test]
+    fn test_display_variants() {
+        assert_eq!(ServiceStatus::Unknown.display(), "???");
+        assert_eq!(ServiceStatus::Active.display(), "active");
+        assert_eq!(ServiceStatus::Inactive.display(), "inactive");
+        assert_eq!(ServiceStatus::Failed.display(), "FAILED");
+        assert_eq!(ServiceStatus::NotFound.display(), "not found");
+        assert_eq!(
+            ServiceStatus::Error("some error".to_string()).display(),
+            "some error"
+        );
+    }
+
+    // --- round-trip: systemctl output lines ---
+
+    #[test]
+    fn test_parse_systemctl_output_lines() {
+        // Simulates the output of "systemctl is-active svc1.service svc2.service svc3.service"
+        let output = "active\ninactive\nfailed\n";
+        let statuses: Vec<ServiceStatus> = output
+            .lines()
+            .map(ServiceStatus::from_str)
+            .collect();
+        assert_eq!(statuses[0], ServiceStatus::Active);
+        assert_eq!(statuses[1], ServiceStatus::Inactive);
+        assert_eq!(statuses[2], ServiceStatus::Failed);
+    }
+}
+
 /// Refresh status for a single cell.
 pub async fn refresh_cell(
     session_mgr: &mut SessionManager,

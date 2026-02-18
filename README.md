@@ -98,3 +98,28 @@ Allow for different formats of ini file, where multiple entries are on the same 
 If service is not present on the remote machine then do not show it on the Main Screen
 
 If ssh times out or has connection error show the status as unreachable in Main Screen. If authentication error then show that status on Main Screen
+
+
+## Tests
+
+```
+cargo test
+```
+
+### Run tests for a specific module:
+```
+cargo test config::inventory
+cargo test config::services
+cargo test monitor::status
+```
+
+###  Run a single test by name:
+```
+cargo test test_parse_inventory_small_ini
+cargo test test_parse_services_yaml
+```
+
+###  Run with output visible (useful if a test panics):
+```
+cargo test -- --nocapture
+```
