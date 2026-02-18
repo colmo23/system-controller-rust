@@ -16,7 +16,11 @@ services:
   s*:
     commands:
       - top -b -n 1
+    files:
+      - /etc/passwd
   c*:
     commands:
       - ls
       - whoami
+    files:
+      - /etc/passwd
